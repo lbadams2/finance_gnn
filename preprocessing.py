@@ -2,10 +2,11 @@ import numpy as np
 import pandas as pd
 import pandas_datareader.data as web
 
-sp_500_sparql = """SELECT ?item ?itemLabel ?exchangeLabel ?tickerLabel ?industryLabel
+sp_500_sparql = """SELECT ?item ?itemLabel ?exchangeLabel ?tickerLabel ?industryLabel ?ownedbyLabel ?productLabel ?memberLabel ?boardmemberLabel
 WHERE 
 {
-  ?item wdt:P361 wd:Q242345 ; p:P414 [pq:P249 ?ticker; ps:P414 ?exchange ]; p:P452 [ps:P452 ?industry] .
+  ?item wdt:P361 wd:Q242345 ; p:P414 [pq:P249 ?ticker; ps:P414 ?exchange ]; p:P452 [ps:P452 ?industry]; 
+        p:P127 [ps:P127 ?ownedby]; p:P1056 [ps:P1056 ?product]; p:P463 [ps:P463 ?member]; p:P3320 [ps:P3320 ?boardmember] .
   SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
 }"""
 
@@ -23,9 +24,15 @@ def get_sp_500_symbols():
 # Google and apple are connected in the graph consisting of (Board member, founded by) relations
 # (industry, material or product produced), (industry, manufacturer), member of, board member
 # create adjacency matrix
-def create_graph(sp_500_symbols):
-    company_code = 'Q783794'
-    sp_500_wiki_code = 'Q242345'
+def load_graphs():
+    with open('data/industry_graph.npy', 'rb') as f:
+        industry_graph = np.load(f)
+    with open('data/board_graph.npy', 'rb') as f:
+        board_graph = np.load(f)
+    with open('data/member_graph.npy', 'rb') as f:
+        member_graph = np.load(f)
+    with open('data/ownedby_graph.npy', 'rb') as f:
+        ownedby_graph = np.load(f)
     
 
 if __name__ == '__main__':
