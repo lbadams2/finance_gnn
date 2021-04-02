@@ -1,17 +1,16 @@
 import numpy as np
 import pandas as pd
-import sklearn as skl
-import keras
-import tensorflow as tf
-from keras.models import Model
-from keras.layers import Dense, Dropout, LSTM, Input, Activation, concatenate
-from keras import optimizers
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, Dropout, LSTM, Input, Activation, concatenate
+from tensorflow.keras.optimizers import Adam
 
 node_feature_dim = 10
 lookback_days = 50
 
-historical_prices = pd.read_csv('data/historical_prices.csv')
-sp500 = pd.read_csv('data/S&P500-Info.csv.csv')
+historical_prices = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/historical_prices.csv')
+hist_symbols = historical_prices.iloc[[0]].to_numpy().squeeze()
+sp500 = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/S&P500-Info.csv')
 symbols = sp500['Symbol']
 
 '''
@@ -21,50 +20,61 @@ graph should only have 1s in upper triangular region
 0 0 0
 '''
 def load_graph():
-    with open('data/member_graph.npy', 'rb') as f:
+    with open('/Users/liam_adams/my_repos/finance_gnn/data/member_graph.npy', 'rb') as f:
         member_graph = np.load(f)
     return member_graph
 
 def normalize_prices(prices):
-    normalizer = skl.preprocessing.MinMaxScaler() # will normalize to [0,1] by default
-    normalized_prices = normalizer.fit_transform(prices)
+    normalizer = MinMaxScaler() # will normalize to [0,1] by default
+    normalized_prices = normalizer.fit_transform(prices) # scales each column independently
     return normalized_prices
 
-def get_prices(index):    
+def get_prices(ticker):    
+    col_inds = np.where(hist_symbols == ticker)[0]
+    col_name = historical_prices.iloc[:, col_inds[0]].name
+    val = col_name.split('.')
+    if len(val) == 1:
+        index = 0
+    else:
+        index = val[1]
     if index == 0:
         #columns = ['Adj Close','Close','High','Low','Open','Volume']
         columns = ['Adj Close', 'High','Low','Open','Volume']
     else:
+
         #columns = ['Adj Close' + '.' + str(index), 'Close' + '.' + str(index), 'High' + '.' + str(index), \
         #                'Low' + '.' + str(index), 'Open' + '.' + str(index),'Volume' + '.' + str(index)]
         columns = ['Adj Close' + '.' + str(index), 'High' + '.' + str(index), \
                         'Low' + '.' + str(index), 'Open' + '.' + str(index),'Volume' + '.' + str(index)]
 
     prices = historical_prices[columns]
-    prices = prices.iloc[2:]
-    np_prices = prices.values
+    prices = prices.iloc[2:] # first 2 rows aren't prices
+    np_prices = prices.to_numpy()
     norm_prices = normalize_prices(np_prices)
     return norm_prices, np_prices
 
 def get_training_data(node_num, norm_prices, prices):
-    # copy() ?
-    x_windows = np.array([norm_prices[i  : i + norm_prices] for i in range(len(norm_prices) - lookback_days)])
+    # changes to slices will reflect in original so use copy
+    x_windows = np.array([norm_prices[i  : i + lookback_days].copy() for i in range(len(norm_prices) - lookback_days)])
     
-    # value of next day close for each x window, copy() ?
-    next_day_close_values_norm = np.array([norm_prices[:,0][i + lookback_days] for i in range(len(norm_prices) - lookback_days)])
+    # value of next day close for each x window, predicting next day close
+    next_day_close_values_norm = np.array([norm_prices[:,0][i + lookback_days].copy() for i in range(len(norm_prices) - lookback_days)])
+    next_day_close_values_norm = np.expand_dims(next_day_close_values_norm, -1) # make 2D
+    
     next_day_close_values = np.array([prices[:,0][i + lookback_days] for i in range(len(prices) - lookback_days)])
+    # expand_dims?
 
-    y_normalizer = skl.preprocessing.MinMaxScaler()
-    y_normalizer.fit(np.expand_dims( next_day_close_values ))
+    y_normalizer = MinMaxScaler()
+    #y_normalizer.fit(np.expand_dims( next_day_close_values )) # allows us to un normalize at the end
 
     technical_indicators = []
     for x in x_windows:
-        sma = np.mean(x[:,0]) # closing price
+        sma = np.mean(x[:,0]) # get average of closing price of each window
         technical_indicators.append(np.array([sma]))
 
     technical_indicators = np.array(technical_indicators)
 		
-    tech_ind_scaler = skl.preprocessing.MinMaxScaler()
+    tech_ind_scaler = MinMaxScaler()
     ti_norm = tech_ind_scaler.fit_transform(technical_indicators)
 
     assert x_windows.shape[0] == next_day_close_values_norm.shape[0] == ti_norm.shape[0]
@@ -96,13 +106,18 @@ def create_model(ti_shape):
     # our model will accept the inputs of the two branches and then output a single value
     model = Model(inputs=[lstm_branch.input, technical_indicators_branch.input], outputs=z)
 
-    adam = optimizers.Adam(lr=0.0005)
+    adam = Adam(lr=0.0005)
 
     model.compile(optimizer=adam,
                 loss='mse')
 
+    return model
+
 # create f dimensional vector for each stock
-def train_node(x_windows, next_day_close_values_norm, next_day_close_values, y_normalizer, ti_norm):
+# need to split training and test data before normalizing, use fit_transform on training data, transform on test data
+# minmaxscaler remembers mean and variance from fit_transform to scale test data accordingly, fit_transform first
+# also need to handle NANs if any
+def train_node(x_windows, next_day_close_values_norm, next_day_close_values, y_normalizer, ti_norm, symbol):
     test_split = 0.9 # the percent of data to be used for testing
     n = int(x_windows.shape[0] * test_split)
 
@@ -118,23 +133,28 @@ def train_node(x_windows, next_day_close_values_norm, next_day_close_values, y_n
     unscaled_y_test = next_day_close_values[n:]
     model = create_model(ti_norm.shape[1])
 
-    model.fit(x=[x_train, ti_train], y=y_train, batch_size=32, epochs=50, shuffle=True, validation_split=0.1)
+    # make sure validation data is newer than training data
+    model.fit(x=[x_train, ti_train], y=y_train, batch_size=32, epochs=10, shuffle=False, validation_split=0.1)
     evaluation = model.evaluate([x_test, ti_test], y_test)
+    model.save_weights('/Users/liam_adams/my_repos/finance_gnn/embeddings/' + symbol)
 
 
 if __name__ == '__main__':
     member_graph = load_graph()
-    dim = member_graph.shape[0]
+    dim = member_graph.shape[0] # comes from members.csv, symbols in alhpabetical order
+    print('nodes in graph', dim)
     nodes = []
     row_sums = np.sum(member_graph, axis=1).tolist()
     col_sums = member_graph.sum(axis=0)
-    historical_prices = pd.read_csv('data/historical_prices.csv')
-    # if ith row or column has 1 node i is in the graph
+    members = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/members.csv')
+    # if ith row or column has a 1, node i is in the graph
     for i in range(dim):
         if row_sums[i] + col_sums[i] > 0:
             nodes.append(i)
-            ticker = member_graph.iloc[i]['tickerLabel']
-            norm_prices, prices = get_prices(i)
+            # get ticker label from members.csv
+            ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0]
+            print('training symbol', ticker)
+            norm_prices, prices = get_prices(ticker)
             x_windows, next_day_close_values_norm, next_day_close_values, y_normalizer, ti_norm = get_training_data(i, norm_prices, prices)
-            train_node(x_windows, next_day_close_values_norm, next_day_close_values, y_normalizer, ti_norm)
+            train_node(x_windows, next_day_close_values_norm, next_day_close_values, y_normalizer, ti_norm, ticker)
     
