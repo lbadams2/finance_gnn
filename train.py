@@ -82,17 +82,22 @@ def get_regression_training_data(member_graph, members):
 
     dim = member_graph.shape[0]
     nodes_to_delete = []
+    node_count = 0
     for i in range(dim):
-        if row_sums[i] < 0:
+        if row_sums[i] < 1:
             nodes_to_delete.append(i)
-            node_map[i] = ticker # need to adjust this
+        else:
+            ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0]
+            node_map[node_count] = ticker
+            node_count += 1
 
     member_graph = np.delete(member_graph, nodes_to_delete, axis=0) # delete nodes with no edges
+    member_graph = np.delete(member_graph, nodes_to_delete, axis=1) # delete nodes with no edges
     dim = member_graph.shape[0]
     for i in range(dim):
         ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0] # stocks in alphabetical order in member_graph and members
         prices = get_prices(ticker)
-        node_map[i] = ticker
+        #node_map[i] = ticker
         neighbors = get_neighbors(member_graph, i)
         neighbor_map[i] = neighbors
         test_split = 0.9 # the percent of data to be used for testing
@@ -236,7 +241,7 @@ def create_model_regression(ti_shape, num_nodes, neighbor_map):
         gnn_outputs.append(tensor_sum)
         # can add relation attention layer here if multiple graphs
         # tensor_sum is equation 3.3 in HATS
-    gnn_outputs = tf.convert_to_tensor(gnn_outputs)
+    gnn_outputs = tf.expand_dims(tf.convert_to_tensor(gnn_outputs), -1)
     out = Dense(num_nodes, activation="relu")(gnn_outputs)
     model = Model(inputs=[lstm_inputs, ti_inputs], outputs=out)
 
@@ -244,7 +249,7 @@ def create_model_regression(ti_shape, num_nodes, neighbor_map):
 
     model.compile(optimizer=adam,
                 loss='mse')
-
+    #model.summary()
     return model
 
 # create f dimensional vector for each stock
@@ -268,7 +273,7 @@ def train(member_graph, members):
                     ti_train_norm, ti_test_norm, y_test_norm, y_test_values, node_map, neighbor_map = get_regression_training_data(member_graph, members)
     model = create_model_regression(ti_train_norm.shape[2], ti_train_norm.shape[0], neighbor_map)
 
-    # x_train_windows is node_num x num_windows x lookback_days np array
+    # x_train_windows is node_num x num_windows x lookback_days x input_features np array
 
     # make sure validation data is newer than training data
     model.fit(x=[x_train_windows, ti_train_norm], y=y_train_norm, batch_size=32, epochs=10, shuffle=False, validation_split=0.1)
