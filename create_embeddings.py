@@ -44,7 +44,7 @@ def train(x_train, y_train, ticker, save=False):
     _, hidden_state, _ = state_getting_model.predict(x_train)
 
     if save:
-        with open('/Users/liam_adams/my_repos/finance_gnn/embeddings/' + ticker + '.npy', 'wb') as f:
+        with open('/Users/liam_adams/my_repos/finance_gnn/embeddings/test/' + ticker + '.npy', 'wb') as f:
             np.save(f, hidden_state)
 
     print('\n\n\n')
@@ -52,7 +52,9 @@ def train(x_train, y_train, ticker, save=False):
 
 if __name__ == '__main__':
     x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
-                    ti_train_norm, ti_test_norm, y_test_norm, y_test_values, neighbor_map, symbols = get_regression_training_data()
+                    ti_train_norm, ti_test_norm, y_test_norm, y_test_normalizer_all, y_test_values, symbols = get_regression_training_data()
     state_models = []
-    for x, y, ticker in zip(x_train_windows, y_train_norm, symbols):
-        train(x, y, ticker)
+    #for x, y, ticker in zip(x_train_windows, y_train_norm, symbols):
+    #    train(x, y, ticker)
+    for x, y, ticker in zip(x_test_windows, y_test_norm, symbols):
+        train(x, y, ticker, True)

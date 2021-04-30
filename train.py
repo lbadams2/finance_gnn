@@ -5,297 +5,185 @@ import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, Dropout, LSTM, Input, Activation, concatenate
 from tensorflow.keras.optimizers import Adam
+from params import *
+import load_data
 
-node_feature_dim = 64
-lookback_days = 50
-num_training_features = 5
+def train_gnn(embeddings, neighbors, ground_truth):
+    num_nodes = embeddings.shape[0]
+    node_features = tf.Variable(tf.random_normal_initializer()(shape=[num_nodes, node_feature_dim], dtype=tf.float32))
+    relation_embedding = tf.Variable(tf.random_normal_initializer()(shape=[relation_embedding_dim], dtype=tf.float32))
+    concat_dim = node_feature_dim + node_feature_dim + relation_embedding_dim
+    weight_matrix = tf.Variable(tf.random_normal_initializer()(shape=[num_nodes, concat_dim, weight_out_dim], dtype=tf.float32))
+    bias = tf.zeros([num_nodes, weight_out_dim], dtype=tf.float32)
 
-historical_prices = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/historical_prices.csv')
-hist_symbols = historical_prices.iloc[[0]].to_numpy().squeeze()
-sp500 = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/S&P500-Info.csv')
-symbols = sp500['Symbol']
+    final_prediction_matrices = tf.Variable(tf.random_normal_initializer()(shape=[num_nodes, weight_out_dim, 1], dtype=tf.float32))
+    final_biases = tf.zeros([num_nodes, 1], dtype=tf.float32)
+    # embedding is input, should be tensor of shape [num_nodes, embedding_dim]
 
-'''
-graph should only have 1s in upper triangular region
-0 1 1
-0 0 1
-0 0 0
-'''
-def load_graph():
-    with open('/Users/liam_adams/my_repos/finance_gnn/data/member_graph.npy', 'rb') as f:
-        member_graph = np.load(f)
-    return member_graph
+    trainable_variables = [node_features, relation_embedding, weight_matrix, bias, final_prediction_matrices, final_biases]
+    # weight matrix and final_prediction_matrices gradients aren't calculating
+    del trainable_variables[3]
+    del trainable_variables[4]
+    optimizer = tf.keras.optimizers.SGD(learning_rate=1e-3)
+    num_iterations = ground_truth.shape[0]
+    # entire windows were embedded
+    for n in range(num_iterations): # timesteps
+        if n >= 5:
+            break
+        print('training time step', n)
+        with tf.GradientTape() as tape:
+            predictions = []
+            for i in range(num_nodes):
+                current_node_embedding_input = tf.gather(embeddings, i)
+                current_node_embedding_input = tf.gather(current_node_embedding_input, n)
+                current_node_feature = tf.gather(node_features, i)
+                neighbor_indices = neighbors[i]
+                stacked_neighbors = []
+                stacked_neighbors_input_emb = []
+                for j in neighbor_indices:
+                    emb_neighbor = tf.gather(embeddings, i)
+                    emb_neighbor = tf.gather(emb_neighbor, n)
+                    stacked_neighbors_input_emb.append(emb_neighbor)
+                    node_feature_neighbor = tf.gather(node_features, j) # j should be tensor
+                    
+                    concat_tensor = tf.concat([current_node_feature, node_feature_neighbor, relation_embedding], axis=0)
+                    node_weight_matrix = tf.gather(weight_matrix, i)
+                    node_bias = tf.gather(bias, i)
+                    #product = tf.linalg.matmul(tf.expand_dims(concat_tensor,0), node_weight_matrix)
+                    product = tf.tensordot(concat_tensor, node_weight_matrix, 1)
+                    product = tf.squeeze(product)
+                    transformed = tf.math.add(product, node_bias)
+                    
+                    exponential_transform = tf.math.exp(transformed)
+                    stacked_neighbors.append(exponential_transform)
 
-def normalize_prices(prices):
-    normalizer = MinMaxScaler() # will normalize to [0,1] by default
-    normalized_prices = normalizer.fit_transform(prices) # scales each column independently
-    return normalized_prices
+                stacked_neighbors = tf.stack(stacked_neighbors)
+                stacked_neighbors_input_emb = tf.stack(stacked_neighbors_input_emb)
+                stacked_neighbors_transformed = tf.math.divide(stacked_neighbors, tf.math.reduce_sum(stacked_neighbors, axis=0))
+                node_representation = tf.math.multiply(stacked_neighbors_transformed, stacked_neighbors_input_emb)
+                node_representation_reduced = tf.math.reduce_sum(node_representation, axis=0)
+                final_node_representation = tf.math.add(node_representation_reduced, current_node_embedding_input)
+                
+                final_pred_matrix = tf.gather(final_prediction_matrices, i)
+                final_bias = tf.gather(final_biases, i)
+                final_product = tf.linalg.matmul(tf.expand_dims(final_node_representation,0), final_pred_matrix)
+                prediction = tf.math.add(final_product, final_bias)
+                predictions.append(prediction)
 
-def get_prices(ticker):    
-    col_inds = np.where(hist_symbols == ticker)[0]
-    col_name = historical_prices.iloc[:, col_inds[0]].name
-    val = col_name.split('.')
-    if len(val) == 1:
-        index = 0
-    else:
-        index = val[1]
-    if index == 0:
-        #columns = ['Adj Close','Close','High','Low','Open','Volume']
-        columns = ['Adj Close', 'High','Low','Open','Volume']
-    else:
-
-        #columns = ['Adj Close' + '.' + str(index), 'Close' + '.' + str(index), 'High' + '.' + str(index), \
-        #                'Low' + '.' + str(index), 'Open' + '.' + str(index),'Volume' + '.' + str(index)]
-        columns = ['Adj Close' + '.' + str(index), 'High' + '.' + str(index), \
-                        'Low' + '.' + str(index), 'Open' + '.' + str(index),'Volume' + '.' + str(index)]
-
-    prices = historical_prices[columns]
-    prices = prices.iloc[2:] # first 2 rows aren't prices
-    np_prices = prices.to_numpy()
-    #norm_prices = normalize_prices(np_prices)
-    return np_prices
-
-def get_neighbors(graph, symbol_index):
-    row = graph[symbol_index]
-    col = graph[ : , symbol_index]
-    row_inds = np.where(row == 1)[0]
-    #col_inds = np.where(col == 1)[0]
-    #all_inds = np.concatenate((row_inds, col_inds))
-    #return all_inds
-    return row_inds
-
-def get_regression_training_data(member_graph, members):        
-    #col_sums = member_graph.sum(axis=0)
-    member_graph = np.maximum(member_graph, member_graph.transpose()) # make matrix symmetric
-    row_sums = np.sum(member_graph, axis=1).tolist()
-    #node_map = {} # stores index to ticker mapping for graph with rows/cols deleted for stocks with no edges
-    neighbor_map = {}
-    x_train_windows_all = []
-    x_test_windows_all = []
-    y_train_norm_all = []
-    y_train_values_all = []
-    y_train_normalizer_all = []
-    ti_train_norm_all = []
-    ti_test_norm_all = []
-    y_test_norm_all = []
-    y_test_values_all = []
-
-    dim = member_graph.shape[0]
-    nodes_to_delete = []
-    node_count = 0
-    for i in range(dim):
-        if row_sums[i] < 1:
-            nodes_to_delete.append(i)
-        '''
-        else:
-            ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0]
-            node_map[node_count] = ticker
-            node_count += 1
-        '''
-
-    member_graph = np.delete(member_graph, nodes_to_delete, axis=0) # delete nodes with no edges
-    member_graph = np.delete(member_graph, nodes_to_delete, axis=1) # delete nodes with no edges
-    dim = member_graph.shape[0] # dim is now smaller
-    # need to also delete from members
-    members = members.drop(nodes_to_delete)
-    for i in range(dim):
-        # this selects the row, not affected by the deletion
-        ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0] # stocks in alphabetical order in member_graph and members
-        prices = get_prices(ticker)
-        #node_map[i] = ticker
-        neighbors = get_neighbors(member_graph, i) # returns row inds, use tf embedding lookup to lookup node embeddings
-        neighbor_map[i] = neighbors
-        test_split = 0.9 # the percent of data to be used for testing
-        n = int(prices.shape[0] * test_split)
-        x_train = prices[:n]
-        x_train_norm = normalize_prices(x_train)
-        x_test = prices[n:]
-        x_test_norm = normalize_prices(x_test)
-        # changes to slices will reflect in original so use copy, i + lookback_days not included
-        x_train_windows = np.array([x_train_norm[i  : i + lookback_days].copy() for i in range(len(x_train_norm) - lookback_days)])
-        x_train_windows_all.append(x_train_windows)
-        x_test_windows = np.array([x_test_norm[i  : i + lookback_days].copy() for i in range(len(x_test_norm) - lookback_days)])
-        x_test_windows_all.append(x_test_windows)
+            predictions = tf.stack(predictions)
+            current_gt = tf.gather(ground_truth, n)
+            diff = tf.math.subtract(predictions, current_gt)
+            loss = tf.math.square(diff)
+            reduced_loss = tf.math.reduce_sum(loss)
         
-        # value of next day close for each x window, predicting next day close
-        next_day_close_values_norm = np.array([x_train_norm[:,0][i + lookback_days].copy() for i in range(len(x_train_norm) - lookback_days)])
-        next_day_close_values_norm = np.expand_dims(next_day_close_values_norm, -1) # make 2D
-        y_train_norm = next_day_close_values_norm
-        y_train_norm_all.append(y_train_norm)
+        grads = tape.gradient(reduced_loss, trainable_variables)
+        optimizer.apply_gradients(zip(grads, trainable_variables))
 
-        next_day_close_values = np.array([x_train[:,0][i + lookback_days] for i in range(len(x_train) - lookback_days)])
-        # expand_dims?
-        y_train_values = next_day_close_values
-        y_train_values_all.append(y_train_values)
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/node_features.npy', 'wb') as f:
+        np.save(f, node_features.numpy())
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/relation_embedding.npy', 'wb') as f:
+        np.save(f, relation_embedding.numpy())
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/weight_matrix.npy', 'wb') as f:
+        np.save(f, weight_matrix.numpy())
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/bias.npy', 'wb') as f:
+        np.save(f, bias.numpy())
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/final_prediction_matrices.npy', 'wb') as f:
+        np.save(f, final_prediction_matrices.numpy())
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/final_biases.npy', 'wb') as f:
+        np.save(f, final_biases.numpy())
 
-        y_train_normalizer = MinMaxScaler() # this remembers original data
-        y_train_normalizer.fit(np.expand_dims( y_train_values, -1 )) # allows us to un normalize at the end
-        y_train_normalizer_all.append(y_train_normalizer)
+def get_symbols(members):
+    symbols = []
+    dim = members.shape[0]
+    for i in range(dim):
+        symbol = members.iloc[[i]]['tickerLabel'].to_numpy()[0]
+        symbols.append(symbol)
+    return symbols
 
-        test_next_day_close_values_norm = np.array([x_test_norm[:,0][i + lookback_days].copy() for i in range(len(x_test_norm) - lookback_days)])
-        test_next_day_close_values_norm = np.expand_dims(test_next_day_close_values_norm, -1) # make 2D
-        y_test_norm = test_next_day_close_values_norm
-        y_test_norm_all.append(y_test_norm)
-
-        test_next_day_close_values = np.array([x_test[:,0][i + lookback_days] for i in range(len(x_test) - lookback_days)])
-        # expand_dims?
-        y_test_values = test_next_day_close_values
-        y_test_values_all.append(y_test_values)
-        
-        ti_train = []
-        for x in x_train_windows:
-            sma = np.mean(x[:,0]) # get average of closing price of each window
-            ti_train.append(np.array([sma]))
-
-        ti_train = np.array(ti_train)            
-
-        ti_test = []
-        for x in x_test_windows:
-            sma = np.mean(x[:,0]) # get average of closing price of each window
-            ti_test.append(np.array([sma]))
-
-        ti_test = np.array(ti_test)
-            
-        tech_ind_scaler = MinMaxScaler()
-        ti_train_norm = tech_ind_scaler.fit_transform(ti_train)
-        ti_train_norm_all.append(ti_train_norm)
-
-        tech_ind_scaler = MinMaxScaler()
-        ti_test_norm = tech_ind_scaler.fit_transform(ti_test)
-        ti_test_norm_all.append(ti_test_norm)
+def predict(x_test_embeddings, neighbors, y_test_values, y_test_scalers):
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/node_features.npy', 'rb') as f:
+        node_features = np.load(f)
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/relation_embedding.npy', 'rb') as f:
+        relation_embedding = np.load(f)
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/weight_matrix.npy', 'rb') as f:
+        weight_matrix = np.load(f)
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/bias.npy', 'rb') as f:
+        bias = np.load(f)
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/final_prediction_matrices.npy', 'rb') as f:
+        final_prediction_matrices = np.load(f)
+    with open('/Users/liam_adams/my_repos/finance_gnn/gnn/final_biases.npy', 'rb') as f:
+        final_biases = np.load(f)
     
-    x_train_windows_all = np.stack(x_train_windows_all)
-    x_test_windows_all = np.stack(x_test_windows_all)
-    y_train_norm_all = np.stack(y_train_norm_all)
-    y_train_values_all = np.stack(y_train_values_all)
-    y_train_normalizer_all = np.stack(y_train_normalizer_all) # this remembers normalizations made to each stock and can undo them
-    ti_train_norm_all = np.stack(ti_train_norm_all)
-    ti_test_norm_all = np.stack(ti_test_norm_all)
-    y_test_norm_all = np.stack(y_test_norm_all)
-    y_test_values_all = np.stack(y_test_values_all)
+    timesteps = y_test_values.shape[0]
+    num_nodes = x_test_embeddings.shape[0]
+    
+    # entire windows were embedded
+    all_predictions = []
+    for n in range(timesteps):
+        print('testing time step', n)
+        predictions = []
+        for i in range(num_nodes):
+            current_node_embedding_input = x_test_embeddings[i, n]
+            current_node_feature = node_features[i]
+            neighbor_indices = neighbors[i]
+            stacked_neighbors = []
+            stacked_neighbors_input_emb = []
+            for j in neighbor_indices:
+                emb_neighbor = x_test_embeddings[i, n]
+                stacked_neighbors_input_emb.append(emb_neighbor)
+                node_feature_neighbor = node_features[j]
+                
+                concat_arr = np.concat([current_node_feature, node_feature_neighbor, relation_embedding], axis=0)
+                node_weight_matrix = weight_matrix[i]
+                node_bias = bias[i]
+                product = np.dot(concat_tensor, node_weight_matrix)
+                product = tf.squeeze(product)
+                transformed = np.add(product, node_bias)
+                
+                exponential_transform = np.exp(transformed)
+                stacked_neighbors.append(exponential_transform)
 
-    assert x_train_windows_all.shape[0] == y_train_norm_all.shape[0] == ti_train_norm_all.shape[0]
-    return x_train_windows_all, x_test_windows_all, y_train_norm_all, y_train_values_all, y_train_normalizer_all, \
-                    ti_train_norm_all, ti_test_norm_all, y_test_norm_all, y_test_values_all, neighbor_map
+            stacked_neighbors = np.stack(stacked_neighbors)
+            stacked_neighbors_input_emb = np.stack(stacked_neighbors_input_emb)
+            stacked_neighbors_transformed = stacked_neighbors / np.reduce_sum(stacked_neighbors, axis=0)
+            node_representation = stacked_neighbors_transformed * stacked_neighbors_input_emb
+            node_representation_reduced = np.reduce_sum(node_representation, axis=0)
+            final_node_representation = node_representation_reduced + current_node_embedding_input
+            
+            final_pred_matrix = final_prediction_matrices[i]
+            final_bias = final_biases[i]
+            final_product = np.dot(final_node_representation, final_pred_matrix)
+            prediction = final_product + final_bias
+            real_prediction = y_test_scaler[i].inverse_transform(prediction)   
+            predictions.append(real_prediction)
 
-def create_gnn(model, neighbors, symbol):
-    # for each neighbor concatenate its representation with current node's representation and relation embedding
-    # concatenate these 3 vectors and feed to attention layer that has weight and bias as learnable params
-    # pass each concatenated vector for each neighbor through the attention layer and sum them
-    # this summed vector is used as input to the relation attention layer which has learnable weight and bias
-    # the relation attention layer sums the all of these relation vectors for the company
-    # the output of this is the final node embedding, this is added to the embedding output by the LSTM layer
-    # now add output layers for prediction and calculate loss
-    pass
+        #y_test_predicted = y_test_scaler.inverse_transform(predictions)
+        all_predictions.append(predictions)
 
-def create_model_regression(ti_shape, num_nodes, neighbor_map):
-    lstm_inputs = []
-    ti_inputs = []
-    outputs = []
-    for i in range(num_nodes):
-        lstm_input = Input(shape=(lookback_days, num_training_features), name='lstm_input_' + str(i))
-        dense_input = Input(shape=(ti_shape,), name='tech_input_' + str(i))
-        
-        # the first branch operates on the first input, each company has its own LSTM
-        x = LSTM(lookback_days, name='lstm_' + str(i))(lstm_input)
-        x = Dropout(0.2, name='lstm_dropout_' + str(i))(x)
-        lstm_branch = Model(inputs=lstm_input, outputs=x)
-        
-        # the second branch opreates on the second input
-        y = Dense(20, name='tech_dense_' + str(i))(dense_input)
-        y = Activation("relu", name='tech_relu_' + str(i))(y)
-        y = Dropout(0.2, name='tech_dropout_' + str(i))(y)
-        technical_indicators_branch = Model(inputs=dense_input, outputs=y)
-
-        # can add third branch for textual data
-        
-        # combine the output of the two branches
-        combined = concatenate([lstm_branch.output, technical_indicators_branch.output], name='concatenate_' + str(i))
-        
-        z = Dense(node_feature_dim, activation="relu", name='dense_pooling_' + str(i))(combined) # save this for the node embedding
-        # concatenate neighbors representation with current node representation
-        lstm_inputs.append(lstm_branch.input)
-        ti_inputs.append(technical_indicators_branch.input)
-        outputs.append(z)
-    #model = Model(inputs=[lstm_inputs, ti_inputs], outputs=outputs)
-
-    gnn_outputs = []
-    # need to make graph matrix symmetrical for this
-    for i in range(num_nodes):
-        neighbors = neighbor_map[i]
-        #neighbors = tf.convert_to_tensor(neighbors)
-        current_node = outputs[i]
-        neighbor_tensors = []
-        z = Dense(node_feature_dim, activation="relu") # don't use activation here if predicting categories
-        neighbors_stacked = []
-        for n in neighbors:
-            # create dense layer which has weight and bias
-            # if you have multiple graphs, concatenate an overall graph embedding vector here as well
-            neighbors_stacked.append(outputs[n])
-            t = tf.concat([current_node, outputs[n]], -1)
-            t = z(t) # reduce dimensions back down to node_feature_dim
-            #t = tf.math.exp(t)
-            neighbor_tensors.append(t)        
-        neighbor_tensors = tf.stack(neighbor_tensors)
-        #tensor_sum = tf.reduce_sum(neighbor_tensors)
-        #neighbor_tensors = tf.nn.softmax(neighbor_tensors) # softmax used for categorical prediction
-        #neighbor_tensors = tf.math.divide(neighbor_tensors, tensor_sum)
-        neighbors_stacked = tf.convert_to_tensor(neighbors_stacked)
-        product = neighbor_tensors * neighbors_stacked
-        tensor_sum = tf.reduce_sum(product)
-        gnn_outputs.append(tensor_sum)
-        # can add relation attention layer here if multiple graphs
-        # tensor_sum is equation 3.3 in HATS
-    gnn_outputs = tf.expand_dims(tf.convert_to_tensor(gnn_outputs), -1)
-    out = Dense(num_nodes, activation="relu")(gnn_outputs)
-    model = Model(inputs=[lstm_inputs, ti_inputs], outputs=out)
-
-    adam = Adam(lr=0.0005)
-
-    model.compile(optimizer=adam,
-                loss='mse')
-    #model.summary()
-    return model
-
-# create f dimensional vector for each stock
-# need to split training and test data before normalizing, use fit_transform on training data, transform on test data
-# minmaxscaler remembers mean and variance from fit_transform to scale test data accordingly, fit_transform first
-# also need to handle NANs if any
-def train(member_graph, members):
-    #test_split = 0.9 # the percent of data to be used for testing
-    #n = int(x_windows.shape[0] * test_split)
-    # splitting the dataset up into train and test sets
-    #x_train = x_windows[:n]
-    #ti_train = ti_norm[:n]
-    #y_train = next_day_close_values_norm[:n]
-
-    #x_test = x_windows[n:]
-    #ti_test = ti_norm[n:]
-    #y_test = next_day_close_values_norm[n:]
-
-    #unscaled_y_test = next_day_close_values[n:]
-    x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
-                    ti_train_norm, ti_test_norm, y_test_norm, y_test_values, neighbor_map = get_regression_training_data(member_graph, members)
-    model = create_model_regression(ti_train_norm.shape[2], ti_train_norm.shape[0], neighbor_map)
-
-    # x_train_windows is node_num x num_windows x lookback_days x input_features np array
-
-    # make sure validation data is newer than training data
-    model.fit(x=[x_train_windows, ti_train_norm], y=y_train_norm, batch_size=32, epochs=10, shuffle=False, validation_split=0.1)
-    evaluation = model.evaluate([x_test_windows, ti_test_norm], y_test_norm)
-    #model.save_weights('/Users/liam_adams/my_repos/finance_gnn/embeddings/' + symbol)
-    #model.save('/Users/liam_adams/my_repos/finance_gnn/embeddings/' + symbol)
-    #test = tf.keras.models.load_model('/Users/liam_adams/my_repos/finance_gnn/embeddings/' + symbol)
-    #test.layers[9].weights[0].numpy()
+    all_predictions_arr = np.asarray(all_predictions)
+    real_predictions = all_predictions_arr - y_test_values
+    all_profit_val = real_predictions.sum()
 
 
 if __name__ == '__main__':
-    member_graph = load_graph()
-    dim = member_graph.shape[0] # comes from members.csv, symbols in alhpabetical order
-    print('nodes in graph', dim)
-    row_sums = np.sum(member_graph, axis=1).tolist()
-    col_sums = member_graph.sum(axis=0)
-    members = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/members.csv')
-    train(member_graph, members)
-    # if ith row or column has a 1, node i is in the graph
+    x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
+                    ti_train_norm, ti_test_norm, y_test_norm, y_test_normalizer_all, y_test_values, symbols = load_data.get_regression_training_data()
+    members = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/members.csv')    
+    member_graph = load_data.load_graph()
     
+    members, member_graph, y_train_norm = load_data.delete_nodes(members, member_graph, y_train_norm)
+    symbols = get_symbols(members)
+    neighbor_map = load_data.get_neighbors(member_graph, symbols)
+    all_embeddings = load_data.load_embeddings(members)
+    embeddings_tensor = tf.convert_to_tensor(all_embeddings, dtype=tf.float32)
+
+    dims = y_train_norm.shape
+    y_train_norm = y_train_norm.reshape((dims[1], dims[0], dims[2]))
+    y_train_tensor = tf.convert_to_tensor(y_train_norm, dtype=tf.float32)
+    
+    train_gnn(embeddings_tensor, neighbor_map, y_train_tensor)
+    
+    '''
+    x_test_embeddings = load_data.load_embeddings(members, False)
+    predict(x_test_embeddings, neighbor_map, y_test_values, y_test_normalizer_all)
+    '''
