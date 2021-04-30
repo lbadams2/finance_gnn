@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import load_data
+import matplotlib.pyplot as plt
 
 def predict(x_test_embeddings, neighbors, y_test_values, y_test_scalers):
     with open('/Users/liam_adams/my_repos/finance_gnn/gnn/node_features.npy', 'rb') as f:
@@ -66,9 +67,20 @@ def predict(x_test_embeddings, neighbors, y_test_values, y_test_scalers):
     real_predictions = all_predictions_arr - y_test_values
     all_profit_val = real_predictions.sum()
 
+def plot_returns(next_day_returns):
+    next_day_returns[~np.isfinite(next_day_returns)] = 0
+    next_day_returns_sum = np.sum(next_day_returns, axis=1)
+    plt.plot(next_day_returns_sum)
+    plt.title('True return of test portfolio')
+    plt.show()
+
 # percent return of each next day price
 def next_day_return(x_test_windows, y_test_norm):
-    print('')
+    dims = x_test_windows.shape
+    x_test_windows = x_test_windows.reshape((dims[1], dims[0], dims[2], dims[3]))
+    last_x_val = x_test_windows[:,:,-1,0] # next day close is in 0 col
+    next_return = (y_test_norm - last_x_val) / last_x_val
+    return next_return
 
 if __name__ == '__main__':
     x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
@@ -85,5 +97,6 @@ if __name__ == '__main__':
     neighbor_map = load_data.get_neighbors(member_graph, symbols)
     
     x_test_embeddings = load_data.load_embeddings(members, False)
-    next_day_return(x_test_windows, y_test_norm)
+    next_returns = next_day_return(x_test_windows, y_test_norm)
+    plot_returns(next_returns)
     predict(x_test_embeddings, neighbor_map, y_test_values, y_test_normalizer_all)

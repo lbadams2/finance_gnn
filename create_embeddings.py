@@ -6,6 +6,7 @@ from tensorflow.keras.layers import Dense, Dropout, LSTM, concatenate, Input
 from tensorflow.keras.optimizers import Adam
 from load_data import get_regression_training_data
 import params
+import matplotlib.pyplot as plt
 
 '''
 input to lstm is matrix for an individual stock, there are num_lookback_days columns in the matrix
@@ -38,15 +39,23 @@ def train(x_train, y_train, ticker, save=False):
                 optimizer=tf.optimizers.Adam(),
                 metrics=[tf.metrics.MeanAbsoluteError()])
 
-    history = model.fit(x_train, y_train, epochs=5)
+    history = model.fit(x_train, y_train, epochs=30)
     
     # this will be windows x embedding dim
     _, hidden_state, _ = state_getting_model.predict(x_train)
 
     if save:
-        with open('/Users/liam_adams/my_repos/finance_gnn/embeddings/test/' + ticker + '.npy', 'wb') as f:
+        with open('/Users/liam_adams/my_repos/finance_gnn/embeddings/' + ticker + '.npy', 'wb') as f:
             np.save(f, hidden_state)
-
+    
+    '''
+    plt.plot(history.history['loss'])
+    #plt.plot(history.history['val_loss'])
+    plt.title('embedding loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.show()
+    '''
     print('\n\n\n')
 
 
@@ -54,7 +63,7 @@ if __name__ == '__main__':
     x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
                     ti_train_norm, ti_test_norm, y_test_norm, y_test_normalizer_all, y_test_values, symbols = get_regression_training_data()
     state_models = []
-    #for x, y, ticker in zip(x_train_windows, y_train_norm, symbols):
-    #    train(x, y, ticker)
-    for x, y, ticker in zip(x_test_windows, y_test_norm, symbols):
-        train(x, y, ticker, True)
+    for x, y, ticker in zip(x_train_windows, y_train_norm, symbols):
+        train(x, y, ticker)
+    #for x, y, ticker in zip(x_test_windows, y_test_norm, symbols):
+    #    train(x, y, ticker, True)

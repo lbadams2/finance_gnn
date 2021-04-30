@@ -68,11 +68,15 @@ def train_gnn(embeddings, neighbors, ground_truth):
                 prediction = tf.math.add(final_product, final_bias)
                 predictions.append(prediction)
 
+            predictions = tf.squeeze(predictions)
             predictions = tf.stack(predictions)
             current_gt = tf.gather(ground_truth, n)
+            current_gt = tf.squeeze(current_gt)
             diff = tf.math.subtract(predictions, current_gt)
             loss = tf.math.square(diff)
-            reduced_loss = tf.math.reduce_sum(loss)
+            loss_clipped = tf.clip_by_value(loss, -1e4, 1e4 )
+            reduced_loss = tf.math.reduce_sum(loss_clipped, axis=0)
+            #print('')
         
         grads = tape.gradient(reduced_loss, trainable_variables)
         optimizer.apply_gradients(zip(grads, trainable_variables))
