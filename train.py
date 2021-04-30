@@ -64,11 +64,11 @@ def get_neighbors(graph, symbol_index):
     #return all_inds
     return row_inds
 
-def get_regression_training_data(member_graph, members):    
-    row_sums = np.sum(member_graph, axis=1).tolist()
+def get_regression_training_data(member_graph, members):        
     #col_sums = member_graph.sum(axis=0)
     member_graph = np.maximum(member_graph, member_graph.transpose()) # make matrix symmetric
-    node_map = {}
+    row_sums = np.sum(member_graph, axis=1).tolist()
+    #node_map = {} # stores index to ticker mapping for graph with rows/cols deleted for stocks with no edges
     neighbor_map = {}
     x_train_windows_all = []
     x_test_windows_all = []
@@ -86,19 +86,24 @@ def get_regression_training_data(member_graph, members):
     for i in range(dim):
         if row_sums[i] < 1:
             nodes_to_delete.append(i)
+        '''
         else:
             ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0]
             node_map[node_count] = ticker
             node_count += 1
+        '''
 
     member_graph = np.delete(member_graph, nodes_to_delete, axis=0) # delete nodes with no edges
     member_graph = np.delete(member_graph, nodes_to_delete, axis=1) # delete nodes with no edges
-    dim = member_graph.shape[0]
+    dim = member_graph.shape[0] # dim is now smaller
+    # need to also delete from members
+    members = members.drop(nodes_to_delete)
     for i in range(dim):
+        # this selects the row, not affected by the deletion
         ticker = members.iloc[[i]]['tickerLabel'].to_numpy()[0] # stocks in alphabetical order in member_graph and members
         prices = get_prices(ticker)
         #node_map[i] = ticker
-        neighbors = get_neighbors(member_graph, i)
+        neighbors = get_neighbors(member_graph, i) # returns row inds, use tf embedding lookup to lookup node embeddings
         neighbor_map[i] = neighbors
         test_split = 0.9 # the percent of data to be used for testing
         n = int(prices.shape[0] * test_split)
@@ -123,7 +128,7 @@ def get_regression_training_data(member_graph, members):
         y_train_values = next_day_close_values
         y_train_values_all.append(y_train_values)
 
-        y_train_normalizer = MinMaxScaler()
+        y_train_normalizer = MinMaxScaler() # this remembers original data
         y_train_normalizer.fit(np.expand_dims( y_train_values, -1 )) # allows us to un normalize at the end
         y_train_normalizer_all.append(y_train_normalizer)
 
@@ -163,7 +168,7 @@ def get_regression_training_data(member_graph, members):
     x_test_windows_all = np.stack(x_test_windows_all)
     y_train_norm_all = np.stack(y_train_norm_all)
     y_train_values_all = np.stack(y_train_values_all)
-    y_train_normalizer_all = np.stack(y_train_normalizer_all)
+    y_train_normalizer_all = np.stack(y_train_normalizer_all) # this remembers normalizations made to each stock and can undo them
     ti_train_norm_all = np.stack(ti_train_norm_all)
     ti_test_norm_all = np.stack(ti_test_norm_all)
     y_test_norm_all = np.stack(y_test_norm_all)
@@ -171,7 +176,7 @@ def get_regression_training_data(member_graph, members):
 
     assert x_train_windows_all.shape[0] == y_train_norm_all.shape[0] == ti_train_norm_all.shape[0]
     return x_train_windows_all, x_test_windows_all, y_train_norm_all, y_train_values_all, y_train_normalizer_all, \
-                    ti_train_norm_all, ti_test_norm_all, y_test_norm_all, y_test_values_all, node_map, neighbor_map
+                    ti_train_norm_all, ti_test_norm_all, y_test_norm_all, y_test_values_all, neighbor_map
 
 def create_gnn(model, neighbors, symbol):
     # for each neighbor concatenate its representation with current node's representation and relation embedding
@@ -270,7 +275,7 @@ def train(member_graph, members):
 
     #unscaled_y_test = next_day_close_values[n:]
     x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
-                    ti_train_norm, ti_test_norm, y_test_norm, y_test_values, node_map, neighbor_map = get_regression_training_data(member_graph, members)
+                    ti_train_norm, ti_test_norm, y_test_norm, y_test_values, neighbor_map = get_regression_training_data(member_graph, members)
     model = create_model_regression(ti_train_norm.shape[2], ti_train_norm.shape[0], neighbor_map)
 
     # x_train_windows is node_num x num_windows x lookback_days x input_features np array
