@@ -65,6 +65,14 @@ def get_neighbors(graph, symbols):
         #return all_inds
     return neighbor_inds
 
+def get_symbols(members):
+    symbols = []
+    dim = members.shape[0]
+    for i in range(dim):
+        symbol = members.iloc[[i]]['tickerLabel'].to_numpy()[0]
+        symbols.append(symbol)
+    return symbols
+
 def normalize_prices(prices):
     normalizer = MinMaxScaler() # will normalize to [0,1] by default
     normalized_prices = normalizer.fit_transform(prices) # scales each column independently
