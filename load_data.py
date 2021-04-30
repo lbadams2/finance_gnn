@@ -35,7 +35,7 @@ def load_embeddings(members, train=True):
     all_embeddings = np.stack(all_embeddings)
     return all_embeddings
 
-def delete_nodes(members, member_graph, y_train):
+def delete_nodes(members, member_graph, y_train, x_train):
     row_sums = np.sum(member_graph, axis=1).tolist()
     nodes_to_delete = []
     node_count = 0
@@ -51,7 +51,10 @@ def delete_nodes(members, member_graph, y_train):
     
     # need to also delete from members
     members = members.drop(nodes_to_delete)
-    return members, member_graph, y_train
+
+    x_train = np.delete(x_train, nodes_to_delete, axis=0)
+
+    return members, member_graph, y_train, x_train
 
 def get_neighbors(graph, symbols):
     neighbor_inds = {}

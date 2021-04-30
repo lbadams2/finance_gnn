@@ -64,7 +64,11 @@ def predict(x_test_embeddings, neighbors, y_test_values, y_test_scalers):
 
     all_predictions_arr = np.asarray(all_predictions)
     real_predictions = all_predictions_arr - y_test_values
-    all_profit_val = real_predictions.sum()    
+    all_profit_val = real_predictions.sum()
+
+# percent return of each next day price
+def next_day_return(x_test_windows, y_test_norm):
+    print('')
 
 if __name__ == '__main__':
     x_train_windows, x_test_windows, y_train_norm, y_train_values, y_train_normalizer, \
@@ -72,9 +76,14 @@ if __name__ == '__main__':
     members = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/members.csv')    
     member_graph = load_data.load_graph()
     
-    members, member_graph, y_train_norm = load_data.delete_nodes(members, member_graph, y_train_norm)
+    members, member_graph, y_test_norm, x_test_windows = load_data.delete_nodes(members, member_graph, y_test_norm, x_test_windows)
+    y_test_norm = y_test_norm.squeeze()
+    dims = y_test_norm.shape
+    y_test_norm = y_test_norm.reshape((dims[1], dims[0]))
+
     symbols = load_data.get_symbols(members)
     neighbor_map = load_data.get_neighbors(member_graph, symbols)
     
     x_test_embeddings = load_data.load_embeddings(members, False)
+    next_day_return(x_test_windows, y_test_norm)
     predict(x_test_embeddings, neighbor_map, y_test_values, y_test_normalizer_all)

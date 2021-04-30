@@ -28,8 +28,6 @@ def train_gnn(embeddings, neighbors, ground_truth):
     num_iterations = ground_truth.shape[0]
     # entire windows were embedded
     for n in range(num_iterations): # timesteps
-        if n >= 5:
-            break
         print('training time step', n)
         with tf.GradientTape() as tape:
             predictions = []
@@ -98,7 +96,7 @@ if __name__ == '__main__':
     members = pd.read_csv('/Users/liam_adams/my_repos/finance_gnn/data/members.csv')    
     member_graph = load_data.load_graph()
     
-    members, member_graph, y_train_norm = load_data.delete_nodes(members, member_graph, y_train_norm)
+    members, member_graph, y_train_norm, x_train_windows = load_data.delete_nodes(members, member_graph, y_train_norm, x_train_windows)
     symbols = load_data.get_symbols(members)
     neighbor_map = load_data.get_neighbors(member_graph, symbols)
     all_embeddings = load_data.load_embeddings(members)
